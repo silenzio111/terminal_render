@@ -1,1 +1,7 @@
 /target
+/mdx PDF.app/
+/macos-app/.build/
+.DS_Store
+*.log
+README.pdf
+elegant-paper-template.pdf

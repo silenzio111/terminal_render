@@ -3,30 +3,18 @@
 //! Pages are rendered lazily in batches of 8 so that very long documents do
 //! not overwhelm the terminal image cache.  The user can navigate forward,
 //! backward, first, and last with single keypresses.
+//!
+//! When a watch file is provided the pager polls its mtime and re-renders
+//! automatically, keeping the reading position proportional to the document.
 
 use crate::render;
-use crate::term::TermCaps;
+use crate::term::{kitty_delete_all_images_escape, TermCaps};
 use std::io::{self, Read, Write};
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 const BATCH_SIZE: usize = 8;
-
-fn debug_log(msg: &str) {
-    use std::fs::OpenOptions;
-    static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
-    let mut guard = LOG.lock().unwrap();
-    if guard.is_none() {
-        *guard = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/mdx_debug.log")
-            .ok();
-    }
-    if let Some(f) = guard.as_mut() {
-        let _ = writeln!(f, "{}", msg);
-        let _ = f.flush();
-    }
-}
+const POLL_MS: i32 = 400;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
@@ -35,62 +23,51 @@ enum Key {
     First,
     Last,
     Quit,
-    ExitPager, // space: leave the pager and return to normal mode
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PagerOutcome {
-    ExitProgram,
-    ExitPager,
-}
-
-struct PagerState<'a> {
-    markdown: &'a [u8],
-    caps: &'a TermCaps,
+struct PagerState {
+    markdown: Vec<u8>,
+    caps: TermCaps,
     /// Rendered pages.  Sparse: batches are loaded on demand.
     pages: Vec<Option<Vec<u8>>>,
     current: usize,
     /// True once a batch has returned fewer than BATCH_SIZE pages.
     exhausted: bool,
-    /// Pre-rendered pages shared from normal mode, if available.
-    pre_rendered: Option<Arc<Vec<Vec<u8>>>>,
 }
 
-impl<'a> PagerState<'a> {
-    fn new(
-        markdown: &'a [u8],
-        caps: &'a TermCaps,
-        pre_rendered: Option<Arc<Vec<Vec<u8>>>>,
-    ) -> Self {
+impl PagerState {
+    fn new(markdown: Vec<u8>, caps: TermCaps) -> Self {
         Self {
             markdown,
             caps,
             pages: Vec::new(),
             current: 0,
             exhausted: false,
-            pre_rendered,
         }
     }
 
     /// Number of pages currently known to exist.
     fn len(&self) -> usize {
-        self.pre_rendered
-            .as_ref()
-            .map(|p| p.len())
-            .unwrap_or_else(|| self.pages.len())
+        self.pages.len()
     }
 
     /// True when the total page count is known.
     fn is_exhausted(&self) -> bool {
-        self.pre_rendered.is_some() || self.exhausted
+        self.exhausted
+    }
+
+    /// Reading progress as a ratio in [0, 1].
+    fn progress(&self) -> f64 {
+        if self.pages.is_empty() {
+            0.0
+        } else {
+            self.current as f64 / (self.pages.len() - 1).max(1) as f64
+        }
     }
 
     /// Ensure the batch containing `index` is loaded.
     fn ensure_loaded(&mut self, index: usize) {
-        if self.pre_rendered.is_some() {
-            return;
-        }
         if self.exhausted && index >= self.pages.len() {
             return;
         }
@@ -104,9 +81,7 @@ impl<'a> PagerState<'a> {
             return;
         }
 
-        debug_log(&format!("loading pages {}-{}", start, end));
-        let rendered = render::render_document_pages(self.markdown, self.caps, start, end);
-        debug_log(&format!("loaded {} pages", rendered.len()));
+        let rendered = render::render_document_pages(&self.markdown, &self.caps, start, end);
         let count = rendered.len();
 
         // Grow pages vector to fit this batch.
@@ -130,7 +105,7 @@ impl<'a> PagerState<'a> {
 
     fn next_page(&mut self) -> bool {
         self.ensure_loaded(self.current + 1);
-        if self.current + 1 < self.len() {
+        if self.current + 1 < self.pages.len() {
             self.current += 1;
             true
         } else {
@@ -149,16 +124,10 @@ impl<'a> PagerState<'a> {
 
     fn go_to(&mut self, index: usize) {
         self.ensure_loaded(index);
-        self.current = index.min(self.len().saturating_sub(1));
+        self.current = index.min(self.pages.len().saturating_sub(1));
     }
 
     fn go_to_last(&mut self) {
-        if let Some(pre) = &self.pre_rendered {
-            if !pre.is_empty() {
-                self.current = pre.len() - 1;
-            }
-            return;
-        }
         // Load batches until exhausted.
         let mut probe = self.pages.len();
         while !self.exhausted {
@@ -170,143 +139,169 @@ impl<'a> PagerState<'a> {
         }
     }
 
-    fn current_page(&self) -> Option<&[u8]> {
-        if let Some(pre) = &self.pre_rendered {
-            return pre.get(self.current).map(|p| p.as_slice());
+    /// Place the cursor at the page closest to the given progress ratio.
+    fn go_to_progress(&mut self, ratio: f64) {
+        // Load enough pages to know the total.
+        self.go_to_last();
+        if self.pages.is_empty() {
+            return;
         }
+        let target = (ratio * (self.pages.len() - 1) as f64).round() as usize;
+        self.current = target.min(self.pages.len() - 1);
+    }
+
+    fn current_page(&self) -> Option<&[u8]> {
         self.pages.get(self.current).and_then(|p| p.as_deref())
     }
 }
 
-pub fn run(
-    markdown: &[u8],
-    caps: &TermCaps,
-    pre_rendered: Option<Vec<Vec<u8>>>,
-) -> anyhow::Result<PagerOutcome> {
-    debug_log("pager::run started");
-    let pre_rendered = pre_rendered.map(Arc::new);
-    let mut state = PagerState::new(markdown, caps, pre_rendered);
+pub fn run(markdown: Vec<u8>, caps: TermCaps, watch_file: Option<PathBuf>) -> anyhow::Result<()> {
+    let mut state = PagerState::new(markdown, caps);
     state.ensure_loaded(0);
-    debug_log(&format!("pager initial page loaded, total known pages {}", state.len()));
+
+    // Track the file mtime for live re-rendering.
+    let mut watch = watch_file.map(WatchState::new);
 
     with_raw_terminal(|| {
-        debug_log("pager entered raw terminal");
         let mut stdout = io::stdout();
-        display_current(&state, &mut stdout)?;
-        debug_log("pager displayed current page");
+        display_current(&state, &mut stdout, watch.as_ref())?;
 
         let stdin = io::stdin();
         let mut stdin_lock = stdin.lock();
         let mut key_buf = Vec::new();
-        let outcome = loop {
-            let key = read_key(&mut stdin_lock, &mut key_buf)?;
-            match key {
-                Key::Quit => break PagerOutcome::ExitProgram,
-                Key::ExitPager => break PagerOutcome::ExitPager,
-                Key::Next => {
-                    if state.next_page() {
-                        display_current(&state, &mut stdout)?;
-                    }
-                }
-                Key::Prev => {
-                    if state.prev_page() {
-                        display_current(&state, &mut stdout)?;
-                    }
-                }
-                Key::First => {
-                    state.go_to(0);
-                    display_current(&state, &mut stdout)?;
-                }
-                Key::Last => {
-                    state.go_to_last();
-                    display_current(&state, &mut stdout)?;
-                }
-                Key::Unknown => {}
-            }
-        };
-
-        // Clear the screen and reset cursor on exit.
-        let _ = stdout.write_all(b"\x1b[2J\x1b[H");
-        stdout.flush()?;
-        Ok(outcome)
-    })
-}
-
-/// Default mode: render the whole document, print it, and wait for a key.
-/// Arrow keys enter the pager; Space or q exit the program.
-/// When the pager is left with Space, the normal view is restored.
-pub fn normal_then_interactive(markdown: &[u8], caps: &TermCaps) -> anyhow::Result<()> {
-    debug_log(&format!("normal_then_interactive started, markdown {} bytes", markdown.len()));
-    let pages = render::render_document_as_pages(markdown, caps);
-    debug_log(&format!("rendered {} pages", pages.len()));
-    let mut stdout = io::stdout();
-    for page in &pages {
-        stdout.write_all(page)?;
-    }
-    stdout.flush()?;
-
-    with_raw_terminal(|| {
-        let stdin = io::stdin();
-        let mut stdin_lock = stdin.lock();
-        let mut key_buf = Vec::new();
-        let mut stdout = io::stdout();
-
-        writeln!(
-            stdout,
-            "\r\nmdx: ↑↓←→ = pager, space/q = quit"
-        )?;
-        stdout.flush()?;
-
         loop {
-            let key = read_key(&mut stdin_lock, &mut key_buf)?;
-            match key {
-                Key::Next | Key::Prev | Key::First | Key::Last => {
-                    // Release stdin lock before calling run(), otherwise run()
-                    // will deadlock waiting for the same StdinLock.
-                    drop(stdin_lock);
-                    let outcome = run(markdown, caps, Some(pages.clone()))?;
-                    stdin_lock = stdin.lock();
-                    match outcome {
-                        PagerOutcome::ExitPager => {
-                            // Restore the normal (continuous) view.
-                            stdout.write_all(b"\x1b[2J\x1b[H")?;
-                            for page in &pages {
-                                stdout.write_all(page)?;
-                            }
-                            writeln!(
-                                stdout,
-                                "\r\nmdx: ↑↓←→ = pager, space/q = quit"
-                            )?;
-                            stdout.flush()?;
-                        }
-                        PagerOutcome::ExitProgram => break,
+            if watch.is_some() {
+                // Non-blocking: poll stdin with a timeout, then check mtime.
+                if poll_stdin(POLL_MS) {
+                    let key = read_key(&mut stdin_lock, &mut key_buf)?;
+                    if handle_key(key, &mut state, &mut stdout, watch.as_ref())? {
+                        break;
+                    }
+                } else if let Some(ref mut w) = watch {
+                    if w.check_changed() {
+                        rerender(&mut state, w, &mut stdout)?;
                     }
                 }
-                Key::Quit | Key::ExitPager => break,
-                _ => {}
+            } else {
+                let key = read_key(&mut stdin_lock, &mut key_buf)?;
+                if handle_key(key, &mut state, &mut stdout, None)? {
+                    break;
+                }
             }
         }
 
+        // Clear the screen, free images, and reset cursor on exit.
+        let _ = stdout.write_all(&kitty_delete_all_images_escape());
         let _ = stdout.write_all(b"\x1b[2J\x1b[H");
         stdout.flush()?;
         Ok(())
     })
 }
 
-fn display_current(state: &PagerState, stdout: &mut io::Stdout) -> io::Result<()> {
+struct WatchState {
+    path: PathBuf,
+    last_mtime: SystemTime,
+}
+
+impl WatchState {
+    fn new(path: PathBuf) -> Self {
+        let last_mtime = file_mtime(&path).unwrap_or(SystemTime::UNIX_EPOCH);
+        Self { path, last_mtime }
+    }
+
+    /// Returns true if the file's mtime has changed since the last check.
+    fn check_changed(&mut self) -> bool {
+        match file_mtime(&self.path) {
+            Some(mtime) if mtime != self.last_mtime => {
+                self.last_mtime = mtime;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+fn file_mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+}
+
+fn rerender(
+    state: &mut PagerState,
+    watch: &mut WatchState,
+    stdout: &mut io::Stdout,
+) -> io::Result<()> {
+    let ratio = state.progress();
+    let content = std::fs::read(watch.path()).unwrap_or_default();
+    *state = PagerState::new(content, state.caps.clone());
+    state.go_to_progress(ratio);
+    display_current(state, stdout, Some(watch))?;
+    Ok(())
+}
+
+/// Handle a key press. Returns true if the pager should quit.
+fn handle_key(
+    key: Key,
+    state: &mut PagerState,
+    stdout: &mut io::Stdout,
+    watch: Option<&WatchState>,
+) -> anyhow::Result<bool> {
+    match key {
+        Key::Quit => Ok(true),
+        Key::Next => {
+            if state.next_page() {
+                display_current(state, stdout, watch)?;
+            }
+            Ok(false)
+        }
+        Key::Prev => {
+            if state.prev_page() {
+                display_current(state, stdout, watch)?;
+            }
+            Ok(false)
+        }
+        Key::First => {
+            state.go_to(0);
+            display_current(state, stdout, watch)?;
+            Ok(false)
+        }
+        Key::Last => {
+            state.go_to_last();
+            display_current(state, stdout, watch)?;
+            Ok(false)
+        }
+        Key::Unknown => Ok(false),
+    }
+}
+
+fn display_current(
+    state: &PagerState,
+    stdout: &mut io::Stdout,
+    watch: Option<&WatchState>,
+) -> io::Result<()> {
     // Clear screen and move cursor to top-left.
     stdout.write_all(b"\x1b[2J\x1b[H")?;
+    // Free any previously displayed images from the terminal cache so it
+    // does not grow unboundedly while navigating.
+    stdout.write_all(&kitty_delete_all_images_escape())?;
 
     let total = if state.is_exhausted() {
         format!("{}", state.len())
     } else {
         "?".to_string()
     };
+    let watch_label = if watch.is_some() { " [watch]" } else { "" };
     write!(
         stdout,
-        "mdx: page {} / {}  (↓/→: next, ↑/←: prev, g/G: first/last, space: exit pager, q: quit)\r\n",
+        "mdx: page {} / {}  (↓/→: next, ↑/←: prev, g/G: first/last, space/q: quit){}\r\n",
         state.current + 1,
-        total
+        total,
+        watch_label,
     )?;
 
     if let Some(page) = state.current_page() {
@@ -317,10 +312,20 @@ fn display_current(state: &PagerState, stdout: &mut io::Stdout) -> io::Result<()
     stdout.flush()
 }
 
+/// Poll stdin for data, returning true if data is available within `timeout_ms`.
+fn poll_stdin(timeout_ms: i32) -> bool {
+    let mut fds = [libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+    n > 0 && (fds[0].revents & libc::POLLIN) != 0
+}
+
 fn read_key(stdin: &mut io::StdinLock<'_>, buf: &mut Vec<u8>) -> anyhow::Result<Key> {
     loop {
         if let Some((key, consumed)) = parse_key(buf) {
-            debug_log(&format!("key parsed {:?}, consumed {}", key, consumed));
             buf.drain(..consumed);
             return Ok(key);
         }
@@ -328,7 +333,6 @@ fn read_key(stdin: &mut io::StdinLock<'_>, buf: &mut Vec<u8>) -> anyhow::Result<
         // Need more bytes.
         let mut tmp = [0u8; 8];
         let n = stdin.read(&mut tmp)?;
-        debug_log(&format!("read {} bytes: {:?}", n, &tmp[..n.min(tmp.len())]));
         if n == 0 {
             return Ok(Key::Quit);
         }
@@ -346,12 +350,11 @@ fn parse_key(buf: &[u8]) -> Option<(Key, usize)> {
     let first = buf[0];
     if first != 0x1b {
         let key = match first {
-            b' ' => Key::ExitPager,
+            b' ' | b'q' | b'Q' => Key::Quit,
             b'j' | b'n' | b'\n' | b'\r' => Key::Next,
             b'b' | b'k' | b'p' => Key::Prev,
             b'g' => Key::First,
             b'G' => Key::Last,
-            b'q' | b'Q' => Key::Quit,
             _ => Key::Unknown,
         };
         return Some((key, 1));

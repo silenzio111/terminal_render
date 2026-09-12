@@ -2,13 +2,11 @@
 name = "mdx"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal Markdown renderer — a PTY proxy that renders Markdown via Typst/SVG/PNG"
+description = "Terminal Markdown renderer — renders .md files as PNG via Typst and the Kitty graphics protocol"
 
 [dependencies]
-portable-pty = "0.8"
 base64 = "0.22"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-nix = { version = "0.29", features = ["signal"] }
 libc = "0.2"
 tempfile = "3"

@@ -4,10 +4,6 @@ use anyhow::Context;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-pub fn render(markdown: &[u8], caps: &TermCaps, paginate: bool) -> Option<Vec<Vec<u8>>> {
-    render_pages(markdown, caps, paginate, None)
-}
-
 /// Render a specific range of pages (1-based, inclusive).
 /// `None` means render all pages.
 pub fn render_pages(
@@ -27,15 +23,16 @@ pub fn render_pages(
             return None;
         }
     };
+    // Reserve 2 terminal rows: 1 for the pager status line + 1 for the
+    // terminal's cursor so the rendered page is fully visible without
+    // manual scrolling.
+    let reserved_pt = caps.cell_height.max(1) as f32 * 0.75 * 2.0;
     let page_height_pt = if paginate {
-        Some(terminal_height_pt(caps))
+        Some(terminal_height_pt(caps) - reserved_pt)
     } else {
         None
     };
     let typst_source = wrap_typst(&typst_body, caps, page_height_pt);
-    if page_range.is_none() {
-        eprintln!("mdx: typst source length = {} bytes", typst_source.len());
-    }
     let ppi = typst_ppi();
     let pngs = match compile_typst_png(&typst_source, ppi, paginate, page_range) {
         Ok(pngs) => pngs,
@@ -44,31 +41,15 @@ pub fn render_pages(
             return None;
         }
     };
-    if page_range.is_none() {
-        eprintln!("mdx: generated {} png page(s)", pngs.len());
-    } else {
-        eprintln!(
-            "mdx: rendered pages {:?}: {} png(s)",
-            page_range,
-            pngs.len()
-        );
-    }
-    for (i, png) in pngs.iter().enumerate() {
-        eprintln!(
-            "mdx: page {} size = {} bytes, dimensions = {:?}",
-            i + 1,
-            png.len(),
-            image::png_dimensions(png)
-        );
-    }
     Some(
-        pngs.into_iter()
+        pngs
+            .into_iter()
             .map(|png| image::render_png_block_native(&png, caps))
             .collect(),
     )
 }
 
-fn markdown_to_typst(markdown: &[u8]) -> anyhow::Result<String> {
+pub(crate) fn markdown_to_typst(markdown: &[u8]) -> anyhow::Result<String> {
     let mut child = Command::new("pandoc")
         .args([
             "-f",
@@ -95,6 +76,17 @@ fn markdown_to_typst(markdown: &[u8]) -> anyhow::Result<String> {
     }
 
     Ok(String::from_utf8(output.stdout)?)
+}
+
+pub fn export_pdf(
+    markdown: &[u8],
+    output_path: &std::path::Path,
+    work_dir: &std::path::Path,
+    paginate: bool,
+) -> anyhow::Result<()> {
+    let typst_body = markdown_to_typst(markdown)?;
+    let typst_source = wrap_pdf_typst(&typst_body, paginate);
+    compile_typst_pdf(&typst_source, output_path, work_dir)
 }
 
 fn compile_typst_png(
@@ -141,7 +133,7 @@ fn compile_typst_png(
     }
 
     let font_dir = font_path();
-    if font_dir.exists() {
+    if font_dir.is_dir() && crate::fonts_dir_has_fonts(&font_dir) {
         command.arg("--font-path").arg(&font_dir);
     }
 
@@ -175,6 +167,50 @@ fn compile_typst_png(
         .collect()
 }
 
+fn compile_typst_pdf(
+    source: &str,
+    output_path: &std::path::Path,
+    work_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let source_file = tempfile::Builder::new()
+        .prefix(".mdx-pdf-")
+        .suffix(".typ")
+        .tempfile_in(work_dir)
+        .context("failed to create temp source file")?;
+    let typ_path = source_file.path().to_path_buf();
+    std::fs::write(&typ_path, source)?;
+
+    let mut command = Command::new("typst");
+    command
+        .arg("compile")
+        .arg("--root")
+        .arg("/")
+        .arg("--format")
+        .arg("pdf");
+
+    let font_dir = font_path();
+    if font_dir.is_dir() && crate::fonts_dir_has_fonts(&font_dir) {
+        command.arg("--font-path").arg(&font_dir);
+    }
+
+    let output = command
+        .arg(&typ_path)
+        .arg(output_path)
+        .stderr(Stdio::piped())
+        .output()?;
+
+    drop(source_file);
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "typst failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(())
+}
+
 fn wrap_typst(body: &str, caps: &TermCaps, page_height_pt: Option<f32>) -> String {
     let width_pt = terminal_width_pt(caps);
     let height_clause = match page_height_pt {
@@ -192,6 +228,7 @@ fn wrap_typst(body: &str, caps: &TermCaps, page_height_pt: Option<f32>) -> Strin
         r#"#set page(width: {width_pt:.2}pt, {height_clause}, margin: (x: 10pt, y: 10pt), fill: rgb("{bg}"))
 #set text(fill: rgb("{fg}"), size: {font_size:.2}pt, font: ("Noto Sans CJK SC", "Noto Sans", "LXGW WenKai"))
 #set par(leading: 0.78em, justify: false)
+#let horizontalrule = line(length: 100%, stroke: 0.6pt)
 #show table: set text(size: {table_font_size:.2}pt)
 #show raw: set text(font: ("JetBrains Mono", "Fira Code", "Menlo"), size: {raw_font_size:.2}pt)
 #set table(stroke: rgb("{fg}") + 0.7pt, inset: 6pt)
@@ -199,6 +236,40 @@ fn wrap_typst(body: &str, caps: &TermCaps, page_height_pt: Option<f32>) -> Strin
 #block(width: 100%, inset: (x: 4pt, y: 4pt))[
 {body}
 ]
+"#
+    )
+}
+
+fn wrap_pdf_typst(body: &str, paginate: bool) -> String {
+    let page_height = if paginate {
+        "// Keep Elegant Paper's normal A4 page height for paginated output."
+    } else {
+        "#set page(height: auto)"
+    };
+
+    format!(
+        r#"#import "@preview/elegant-paper:0.1.0": elegant-paper
+
+#show: elegant-paper.with(
+  paper: "a4",
+  // Markdown files do not currently expose paper metadata to this wrapper.
+  // Empty values keep the template's styling without reserving a blank title page.
+  title: (
+    title: (),
+    authors: (),
+    abstract: (),
+    keywords: (),
+  ),
+  enable-outline: false,
+)
+
+{page_height}
+#set par(justify: true)
+#set heading(numbering: none)
+#let horizontalrule = line(length: 100%, stroke: 0.6pt)
+#show table: set table(inset: 8pt)
+
+{body}
 "#
     )
 }
@@ -282,5 +353,25 @@ mod tests {
     fn supports_fixed_page_height() {
         let source = wrap_typst("hello", &caps(), Some(300.0));
         assert!(source.contains("height: 300.00pt"));
+    }
+
+    #[test]
+    fn wraps_pdf() {
+        let source = wrap_pdf_typst("hello", true);
+        assert!(source.contains("@preview/elegant-paper:0.1.0"));
+        assert!(source.contains("enable-outline: false"));
+        assert!(source.contains("normal A4 page height"));
+        assert!(!source.contains("#set page(height: auto)"));
+        assert!(source.contains("justify: true"));
+        assert!(source.contains("numbering: none"));
+        assert!(source.contains("horizontalrule = line"));
+        assert!(source.contains("#show table: set table(inset: 8pt)"));
+        assert!(source.contains("hello"));
+    }
+
+    #[test]
+    fn wraps_continuous_pdf() {
+        let source = wrap_pdf_typst("hello", false);
+        assert!(source.contains("#set page(height: auto)"));
     }
 }

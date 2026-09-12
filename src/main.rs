@@ -1,60 +1,140 @@
 mod pager;
-mod parser;
-mod pty;
 mod render;
 mod term;
 
 use clap::Parser as ClapParser;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(ClapParser)]
 #[command(
     name = "mdx",
-    about = "Terminal Markdown renderer — a PTY proxy for CLI AI tools",
-    long_about = "Wraps any CLI program (Claude Code, Codex, etc.) and renders \
-                  Markdown output as PNG images via Typst and the Kitty graphics protocol."
+    about = "Terminal Markdown renderer — renders .md files as PNG via Typst + Kitty graphics",
 )]
 struct Args {
-    /// Render the whole output as one image instead of streaming block by block.
-    #[arg(long)]
-    batch: bool,
+    /// Markdown file to render.
+    #[arg(required = true)]
+    file: PathBuf,
 
-    /// Enter the interactive pager immediately (default is normal output).
+    /// Export the rendered Markdown to a PDF next to the .md file, then exit.
     #[arg(long)]
-    pager: bool,
+    pdf: bool,
 
-    /// Output all pages and exit; do not wait for a key or enter the pager.
-    #[arg(long)]
-    no_pager: bool,
+    /// Use one continuous long page instead of normal A4 pagination.
+    #[arg(long, conflicts_with = "paginate", requires = "pdf")]
+    continuous: bool,
 
-    /// Command to run (e.g., "claude", "codex", "cat README.md")
-    #[arg(required = true, num_args = 1..)]
-    command: Vec<String>,
+    /// Use normal A4 pagination (the default for PDF export).
+    #[arg(long, conflicts_with = "continuous", requires = "pdf")]
+    paginate: bool,
 }
 
-/// Heuristic: treat the command as batch mode if any argument is an existing file.
-/// This catches `mdx cat file.md`, `mdx pandoc ... file.md`, etc.
-fn detect_batch(command: &[String]) -> bool {
-    command.iter().any(|arg| Path::new(arg).is_file())
+/// Verify that external rendering tools are installed and reachable.
+fn check_dependencies() -> anyhow::Result<()> {
+    for cmd in ["pandoc", "typst"] {
+        if std::process::Command::new(cmd)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            anyhow::bail!(
+                "`{}` not found in PATH.\n\
+                 mdx requires both `pandoc` and `typst` to render Markdown.\n\n\
+                 Install them:\n  \
+                 macOS:  brew install pandoc typst\n  \
+                 Linux:  sudo apt install pandoc && cargo install typst-cli\n  \
+                 Arch:   sudo pacman -S pandoc typst",
+                cmd
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Check whether the bundled fonts directory contains any font files.
+/// Returns true if at least one .ttf/.otf/.ttc is found (recursively).
+pub fn fonts_dir_has_fonts(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if fonts_dir_has_fonts(&path) {
+                return true;
+            }
+        } else if let Some(ext) = path.extension() {
+            let ext = ext.to_string_lossy().to_lowercase();
+            if ext == "ttf" || ext == "otf" || ext == "ttc" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Warn the user if the bundled fonts directory is empty.
+fn check_fonts() {
+    let font_dir = std::env::var("MDX_FONT_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("fonts"));
+    if !fonts_dir_has_fonts(&font_dir) {
+        eprintln!(
+            "mdx: warning: no font files found in `{}`. \
+             Rendering will rely on system fonts. \
+             See `fonts/README.md` for how to bundle fonts.",
+            font_dir.display()
+        );
+    }
 }
 
 fn main() {
     let args = Args::parse();
-    let batch = args.batch || detect_batch(&args.command);
 
-    // Determine pager behavior for batch mode.
-    let pager_mode = if args.no_pager {
-        pty::PagerMode::Disabled
-    } else if args.pager {
-        pty::PagerMode::Immediate
-    } else {
-        // Default batch behavior: output all pages, then wait for a key.
-        pty::PagerMode::OnDemand
+    if let Err(e) = check_dependencies() {
+        eprintln!("mdx: {}", e);
+        std::process::exit(1);
+    }
+    check_fonts();
+
+    let file = &args.file;
+    if !file.is_file() {
+        eprintln!("mdx: file not found: {}", file.display());
+        std::process::exit(1);
+    }
+
+    let markdown = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("mdx: failed to read {}: {}", file.display(), e);
+            std::process::exit(1);
+        }
     };
 
-    eprintln!("mdx: batch mode = {}, pager mode = {:?}", batch, pager_mode);
+    if args.pdf {
+        let pdf_path = file.with_extension("pdf");
+        let work_dir = file.parent().unwrap_or_else(|| Path::new("."));
+        let paginate = args.paginate || !args.continuous;
+        if let Err(e) = render::typst_block::export_pdf(
+            &markdown,
+            &pdf_path,
+            work_dir,
+            paginate,
+        ) {
+            eprintln!("mdx: failed to write PDF: {}", e);
+            std::process::exit(1);
+        }
+        eprintln!("mdx: wrote {}", pdf_path.display());
+        return;
+    }
 
-    if let Err(e) = pty::run(&args.command, batch, pager_mode) {
+    let caps = term::detect();
+
+    if let Err(e) = pager::run(markdown, caps, Some(file.clone())) {
         eprintln!("mdx: error: {}", e);
         std::process::exit(1);
     }
