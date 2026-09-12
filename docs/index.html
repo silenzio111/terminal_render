@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="mdx renders Markdown as images in compatible terminals and exports polished PDFs.">
-  <title>mdx · Markdown, rendered for the terminal</title>
+  <meta name="description" content="mdx 在支持图形协议的终端中渲染 Markdown，并导出排版良好的 PDF。">
+  <title>mdx · 在终端中阅读排版后的 Markdown</title>
   <style>
     :root { --ink:#e9ecf3; --muted:#aeb5c5; --paper:#111218; --card:#191b24; --line:#303342; --lime:#c6ee5d; --blue:#6bb4ff; }
     *{box-sizing:border-box} body{margin:0;color:var(--ink);background:var(--paper);font:16px/1.68 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}.wrap{width:min(1100px,calc(100% - 40px));margin:auto}nav{display:flex;justify-content:space-between;align-items:center;padding:25px 0}.brand{font-weight:800;letter-spacing:-.05em}.navlink{color:#c7cdda;text-decoration:none;font-size:.86rem}.hero{background:radial-gradient(circle at 83% 16%,#355d84 0,transparent 29%),linear-gradient(135deg,#181b26,#111218);padding:74px 0 82px}.eyebrow{color:var(--lime);text-transform:uppercase;letter-spacing:.12em;font-size:.75rem;font-weight:800}h1{max-width:800px;margin:12px 0 18px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:clamp(2.7rem,8vw,5.5rem);line-height:1.03;letter-spacing:-.065em}.lede{max-width:650px;margin:0;color:#c6cedd;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:1.17rem}.actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}.button{display:inline-block;padding:11px 17px;border:1px solid #596174;border-radius:999px;color:white;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:700}.button.primary{background:var(--lime);color:#19200a;border-color:var(--lime)}main{padding:64px 0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.intro{max-width:720px;margin-bottom:35px}h2{margin:0 0 10px;font-size:1.85rem;letter-spacing:-.04em}.muted{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{padding:23px;border:1px solid var(--line);border-radius:18px;background:var(--card)}.card h3{margin:0 0 7px;font-size:1.03rem}.card p{margin:0;color:var(--muted);font-size:.94rem}.banner{display:grid;grid-template-columns:1.25fr .75fr;gap:25px;align-items:center;margin:52px 0;padding:30px;border:1px solid var(--line);border-radius:22px;background:#1b2331}.facts{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.fact{padding:15px;border-radius:14px;background:#151822}.fact strong{display:block;font-size:1.1rem;color:var(--lime)}.fact span{color:var(--muted);font-size:.83rem}code{padding:2px 5px;border-radius:5px;background:#282d3b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em}footer{padding:30px 0 45px;color:var(--muted);font-size:.88rem}@media(max-width:700px){.grid,.banner{grid-template-columns:1fr}nav{padding:19px 0}.hero{padding:55px 0 62px}main{padding:45px 0}}
@@ -12,25 +12,17 @@
 </head>
 <body>
   <header class="hero"><div class="wrap">
-    <nav><span class="brand">$ mdx</span><a class="navlink" href="https://github.com/silenzio111/terminal_render">GitHub ↗</a></nav>
-    <p class="eyebrow">Markdown to terminal graphics</p><h1>Read Markdown<br>without leaving the terminal.</h1>
-    <p class="lede">mdx turns Markdown into high-resolution images using Typst and displays them through the Kitty graphics protocol. It also exports clean A4 or continuous PDFs.</p>
-    <div class="actions"><a class="button primary" href="https://github.com/silenzio111/terminal_render">View source</a><a class="button" href="#features">Explore features</a></div>
+    <nav><span class="brand">$ mdx</span><a class="navlink" href="https://github.com/silenzio111/terminal_render">GitHub 源码 ↗</a></nav>
+    <p class="eyebrow">将 Markdown 渲染到终端</p><h1>不离开终端，<br>也能认真阅读 Markdown。</h1>
+    <p class="lede">mdx 使用 Typst 将 Markdown 渲染为高清图像，通过 Kitty 图形协议直接显示在兼容终端中；它也能导出规整的 A4 或连续长页 PDF。</p>
+    <div class="actions"><a class="button primary" href="https://github.com/silenzio111/terminal_render">查看源代码</a><a class="button" href="#features">了解设计思路</a></div>
   </div></header>
   <main class="wrap">
-    <section id="features" class="intro"><h2>For people who live in a terminal but still care about typography.</h2><p class="muted">mdx preserves a terminal workflow while giving long-form Markdown a readable, rendered presentation instead of asking you to mentally parse raw syntax.</p></section>
-    <section class="grid">
-      <article class="card"><h3>Rendered pages</h3><p>Convert Markdown to PNG with Pandoc and Typst, then display it in compatible graphics-capable terminals.</p></article>
-      <article class="card"><h3>Interactive pager</h3><p>Move page by page with familiar keys, jump to either end, and keep your focus inside the shell.</p></article>
-      <article class="card"><h3>Watch while writing</h3><p>When a source file changes, mdx re-renders it and preserves your reading position by progress.</p></article>
-      <article class="card"><h3>PDF export</h3><p>Export paginated A4 PDFs or one continuous long page using a pinned Typst paper template.</p></article>
-      <article class="card"><h3>Font-aware</h3><p>Use bundled or system fonts, with sensible CJK body-text and programming-font fallbacks.</p></article>
-      <article class="card"><h3>Finder integration</h3><p>A companion macOS app can register as a handler for Markdown files and export PDFs beside them.</p></article>
-    </section>
-    <section class="banner"><div><h2>Open a file. Render it. Keep reading.</h2><p class="muted">Run <code>mdx file.md</code> for the interactive viewer, or <code>mdx --pdf file.md</code> for a PDF. Kitty, Ghostty, WezTerm, rio and Otty support the graphics protocol used here.</p></div><div class="facts"><div class="fact"><strong>Rust</strong><span>Core CLI</span></div><div class="fact"><strong>Typst</strong><span>Rendering engine</span></div><div class="fact"><strong>Kitty protocol</strong><span>Terminal images</span></div><div class="fact"><strong>MIT</strong><span>Open source</span></div></div></section>
-    <section><h2>Build it</h2><p class="muted">Install Pandoc and Typst, then run <code>cargo build --release</code>. See the README for requirements, terminal compatibility and the Finder app workflow.</p></section>
+    <section id="features" class="intro"><h2>研发动机，是不让终端用户在阅读时退回到纯文本时代。</h2><p class="muted">终端很适合写作、审阅版本差异和处理文件，但长篇 Markdown 一旦包含层级标题、表格、代码、图片或中文排版，原始标记会很快遮住内容本身。打开浏览器或单独的阅读器当然可行，却打断了本来连贯的命令行工作流。mdx 尝试保留终端的速度与可组合性，同时给文档一个值得阅读的视觉形态。</p><p class="muted">项目不把 Markdown 解释为需要“预览一下”的源代码，而把它看作可被完整排版的文档。使用者可以在 shell 中打开文件、翻阅渲染后的页面、保存时自动刷新，并在同一条路径上导出 PDF。目标不是替代所有编辑器，而是为习惯在终端里完成大部分工作的写作者和开发者补上阅读这一环。</p></section>
+    <section class="intro"><h2>技术链路把成熟的排版工具接入终端能力。</h2><p class="muted">mdx 先由 Pandoc 把 Markdown 转换为 Typst 源码，再由 Typst 生成高分辨率 PNG 页面。终端展示使用 Kitty graphics protocol，因此图像能够直接出现在 Kitty、Ghostty、WezTerm、rio 或 Otty 等兼容终端里，而不是退化为字符画或临时文件路径。该选择承认不同终端的能力差异，也让渲染效果有明确的质量下限。</p><p class="muted">核心程序使用 Rust 编写，主要原因是它适合处理终端窗口尺寸、信号、输入事件、外部进程和连续刷新这些对资源释放与错误处理要求较高的边界。翻页器维护阅读位置，文件监听模式在内容重新渲染后按阅读进度恢复；没有文件参数时，程序也能处理来自子进程的流式 Markdown，使终端中的生成式输出获得更可读的呈现。</p></section>
+    <section class="intro"><h2>排版与导出不是附加按钮，而是同一份文档的两个落点。</h2><p class="muted">阅读模式强调屏幕上的连续反馈，PDF 模式则面向交付、归档和打印。mdx 使用固定版本的 Typst 论文模板导出正常 A4 分页，也允许导出一张连续长页；这样同一份 Markdown 不需要先在浏览器里截图、再手工拼接成文件。字体路径可以自定义，项目也提供面向中文正文与等宽代码的字体回退策略，尽量让不同机器上的结果保持可读。</p><p class="muted">macOS 还提供一个 Finder 集成应用，可以把 Markdown 文件直接交给 mdx PDF.app 处理并将结果写回源文件旁。它不是另一套渲染引擎，而是把已有的命令行能力接到图形桌面入口，方便不希望每次打开终端的使用者。</p></section>
+    <section class="intro"><h2>项目保持对运行环境的诚实说明。</h2><p class="muted">mdx 依赖 Pandoc 和 Typst，并只在 Unix 类系统上工作；不支持 Kitty 图形协议的终端不会显示图像。与其提供看似通用却不稳定的降级体验，项目选择明确写出这些条件，让使用者知道应该安装什么、在哪些终端中使用，以及为什么某些环境不适合它。</p><p class="muted">安装依赖后执行 <code>cargo build --release</code> 即可构建命令行程序。README 说明了终端兼容性、字体目录、PDF 导出参数和 Finder 应用的打包方式。源码以 MIT 许可发布，欢迎将渲染主题、键位、字体策略或适配范围继续扩展。</p></section>
   </main>
-  <footer class="wrap">mdx · Terminal Markdown renderer · MIT License</footer>
+  <footer class="wrap">mdx · 终端 Markdown 渲染器 · MIT 开源许可</footer>
 </body>
 </html>
-
